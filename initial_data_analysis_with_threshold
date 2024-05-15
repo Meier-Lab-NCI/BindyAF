@@ -1,0 +1,383 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import requests
+import numpy as np
+from sklearn.cluster import DBSCAN
+from mpl_toolkits.mplot3d import Axes3D
+from sklearn.cluster import Birch
+
+#Grabbing and Fragmenting protein sequence
+def get_protein_sequence(uniprot_id):
+    """Fetch the protein sequence from UniProt using its UniProt ID."""
+    url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}.fasta"
+    response = requests.get(url)
+
+    if response.status_code == 200:
+        lines = response.text.split("\n")
+        sequence = "".join(lines[1:])
+        return sequence
+    else:
+        print(f"Failed to fetch protein sequence for UniProt ID {uniprot_id}. Status code: {response.status_code}")
+        return None 
+    
+def index_amino_acids(protein):
+    """
+    Index amino acids in a protein sequence.
+
+    Parameters:
+    protein (str): The protein sequence.
+
+    Returns:
+    amino_acid_index (array): an array of the amino acid number
+    """
+    amino_acid_index = []
+    for i in range(len(protein)):
+        amino_acid_index.append(i + 1)
+    return amino_acid_index
+
+def fragment_protein(protein, window_size=4, step_size=2):
+    """
+    Fragment a protein sequence with a sliding window.
+
+    Parameters:
+    protein (list): The protein sequence as a list of amino acids.
+    window_size (int): The size of each fragment.
+    step_size (int): The step size for sliding the window.
+
+    Returns:
+    fragment_dict (dict): A dictionary where keys are fragment counts and values are dictionaries containing
+                         fragments as keys and their corresponding indices as values.
+    """
+    fragment_dict = {}
+    count = 1
+    for i in range(0, len(protein) - window_size + 1, step_size):
+        fragment = protein[i:i+window_size]
+        fragment_dict[count] = fragment
+        count += 1
+    return fragment_dict
+
+
+#grabbing the data from the excel spreadsheet 
+def excel_to_array (excel, specified_columns):
+    """
+    This creates an array of specific columns from an Excel spreadsheet.
+
+    Parameters:
+    excel (str): The pathway to the data.
+    specified_columns (list of str): A list of column names you want to look at.
+    count (int): The count of arrays processed, used as the first index in the output.
+
+    Outputs:
+    new_array (dict): A dictionary with the count of arrays processed as the first index and array data as the value.
+    """
+    df = pd.read_excel(excel, usecols=specified_columns)
+    array_list = []
+
+    count = 1
+    for _, row in df.iterrows():
+        array_list.append([count] + row.tolist())
+        count += 1
+
+    return array_list
+
+def excel_to_array_no_count (excel, specified_columns):
+    """
+    This creates an array of specific columns from an Excel spreadsheet.
+
+    Parameters:
+    excel (str): The pathway to the data.
+    specified_columns (list of str): A list of column names you want to look at.
+    count (int): The count of arrays processed, used as the first index in the output.
+
+    Outputs:
+    new_array (dict): A dictionary with the count of arrays processed as the first index and array data as the value.
+    """
+    df = pd.read_excel(excel, usecols=specified_columns)
+    array_list = []
+
+    count = 1
+    for _, row in df.iterrows():
+        array_list.append(row.tolist())
+        count += 1
+
+    return array_list
+
+def filter_array (array, threshold, index):
+    """Filters a specific index of the array to a threshold while keeping all the other indexices the same
+
+        Parameters:
+        array: the array you want to filter
+        threshold: a float that is the threshold
+        index: a number that determines which index of the array you want to look at
+
+        Outputs:
+        filtered_array: the new array that deletes all the other arrays in the dictionary"""
+
+    array = np.array(array)
+
+    # Create a boolean mask to filter the array based on the threshold
+    mask = array[:, index] >= threshold
+
+    # Filter the array based on the mask
+    filtered_array = array[mask]
+
+    return filtered_array
+
+def retrieve_fragment(dictionary, array_of_numbers):
+    """
+    Retrieve fragments from a dictionary using numbers from an array.
+
+    Parameters:
+    dictionary (dict): The dictionary where keys are numbers and values are arrays.
+    array_of_numbers (list): The array containing numbers to retrieve fragments from the dictionary.
+
+    Returns:
+    fragments (dict): A dictionary where keys are names of lists and values are fragments obtained from the dictionary.
+    """
+    fragments = {}
+    for number in array_of_numbers:
+        if number in dictionary:
+            fragments[f"List {number}"] = dictionary[number]
+    return fragments
+
+def tanimoto_distance(set1, set2):
+    """
+    Calculate the Tanimoto distance between two arrays.
+
+    Parameters:
+    array1 (numpy.ndarray): The first array.
+    array2 (numpy.ndarray): The second array.
+
+    Returns:
+    distance (float): The Tanimoto distance between the two arrays.
+    """
+    intersection = len(set(set1).intersection(set(set2)))
+    union = len(set1) + len(set2) - intersection
+    distance = 1.0 - (intersection / union)
+    return distance
+
+def calculate_tanimoto_distances(dictionary):
+    """
+    Calculate the Tanimoto distances between all pairs of arrays in a dictionary.
+
+    Parameters:
+    dictionary (dict): The dictionary where keys are array names and values are the corresponding arrays.
+
+    Returns:
+    distances (dict): A dictionary where keys are tuples representing pairs of array names
+                      and values are the corresponding Tanimoto distances.
+    """
+    distances = {}
+    array_names = list(dictionary.keys())
+    n = len(array_names)
+    for i in range(n):
+        for j in range(i+1, n):
+            array1 = dictionary[array_names[i]]
+            array2 = dictionary[array_names[j]]
+            distance = tanimoto_distance(array1, array2)
+            distances[(array_names[i], array_names[j])] = distance
+    return distances
+
+def normalizing_data (flatten_array):
+    """
+    When the data set is Gaussian distribution and you want to normalize the data
+
+    Parameters:
+    Flatten_array = an array that has been flattened
+
+    Returns: a normalized array
+    """
+    norm = (flatten_array - np.mean(flatten_array))/ np.std(flatten_array)
+    return norm
+
+"""Grabbing data for protein sequence and fragment"""
+#User input
+uniprot_id = input("Enter UniProt ID: ")
+sliding_window = int(input("What was the sliding window size: "))
+fragment_size = int(input("What was the fragment size: "))
+
+
+protein_seq = get_protein_sequence(uniprot_id)#Grabbing Protein sequence
+indexed_protein = index_amino_acids(protein_seq) #creating the sequence of protein and then numbering amino acids
+dictionary_fragment = fragment_protein(indexed_protein, fragment_size, sliding_window)#fragmenting the sequence
+
+
+"""Grabbing data from excel spreadsheet"""
+user_input_path = input('What is the file name: ')
+path = '/Users/castroverdeac/Desktop/Project/outputs/'+user_input_path+'.xlsx'
+columns = ['contact_pairs', 'mpDockQ/pDockQ', 'iptm']
+data_excel = excel_to_array(path, columns) #an array of the data from the excel spreadsheet
+
+contact_filter = filter_array(data_excel, 10, 1)
+dock_filter = filter_array(contact_filter, 0.175, 2)
+
+new_excel_path = '/Users/castroverdeac/Desktop/Project/outputs/'+user_input_path+'_frag_newdata.xlsx'
+
+df_one = pd.DataFrame(dock_filter)
+
+# Create ExcelWriter object
+with pd.ExcelWriter(new_excel_path, engine='xlsxwriter') as writer:
+    # Write DataFrame to a specific sheet
+    df_one.to_excel(writer, sheet_name='data', index=False, index_label=None)
+
+"""Normalizing Data"""
+fragment = excel_to_array_no_count(new_excel_path, specified_columns=[0])
+contact_pair = excel_to_array_no_count(new_excel_path, specified_columns=[1])
+iptm = excel_to_array_no_count(new_excel_path, specified_columns=[2])
+mpDockQ = excel_to_array_no_count(new_excel_path, specified_columns=[3])
+
+# Flatten the arrays
+flat_fragment = np.array(fragment).flatten()
+flat_contact_pair = np.array(contact_pair).flatten()
+flat_iptm = np.array(iptm).flatten()
+flat_mpDockQ = np.array(mpDockQ).flatten()
+
+# Normalize the flattened arrays
+norm_iptm = normalizing_data(flat_iptm)
+norm_mpDockQ = normalizing_data(flat_mpDockQ)
+
+# Pad arrays with NaN values to match the length of the longest array
+max_length = max(len(flat_fragment), len(flat_contact_pair), len(norm_iptm), len(norm_mpDockQ))
+norm_iptm = np.pad(norm_iptm, (0, max_length - len(norm_iptm)), mode='constant', constant_values=np.nan)
+norm_mpDockQ = np.pad(norm_mpDockQ, (0, max_length - len(norm_mpDockQ)), mode='constant', constant_values=np.nan)
+
+# Create a DataFrame with normalized data
+new_data = {
+    'fragment': flat_fragment,
+    'contact_pair': flat_contact_pair,
+    'norm_iptm': norm_iptm,
+    'norm_mpDockQ': norm_mpDockQ
+}
+df = pd.DataFrame(new_data)
+
+# Create ExcelWriter object
+with pd.ExcelWriter(new_excel_path, engine='openpyxl', mode = 'a') as writer:
+    # Write DataFrame to a specific sheet
+    df.to_excel(writer, sheet_name='normalized data', index=False)
+    
+"""Tanimoto Distance"""
+first_elements = [array[0] for array in dock_filter] #creating a new array of all the fragment names that follow that criteria
+fitted_fragments = retrieve_fragment(dictionary_fragment, first_elements)
+tanimoto = calculate_tanimoto_distances(fitted_fragments)
+
+# Convert the dictionary to a list of tuples
+tanimoto_list = [(key[0], key[1], value) for key, value in tanimoto.items()]
+
+# Create DataFrame from the list of tuples
+df_tan = pd.DataFrame(tanimoto_list, columns=['Array1', 'Array2', 'Tanimoto_Distance'])
+
+# Create ExcelWriter object
+with pd.ExcelWriter(new_excel_path, engine='openpyxl', mode = 'a') as writer:
+    # Write DataFrame to a specific sheet
+    df_tan.to_excel(writer, sheet_name='tanimoto distance', index=False)
+
+print("Data has been successfully written to", new_excel_path)
+
+"""DBSCAN of Data"""
+# Load data from Excel spreadsheet
+df_two = pd.read_excel(new_excel_path, sheet_name='data')
+
+# Preprocess the data
+# Handle missing values if any
+df_two = df_two.dropna()  # Drop rows with missing values
+
+# DataFrame columns to float if needed
+df_two[3] = df_two[3].astype(float)
+df_two[1] = df_two[1].astype(float)
+df_two[2] = df_two[2].astype(float)
+
+# Extract the features for clustering
+features = df_two[[3, 1, 2]].values
+
+# Perform DBSCAN clustering
+eps = 0.3  # Adjust this value to change the maximum distance between samples
+min_samples = 5  # Adjust this value to change the minimum number of samples in a neighborhood
+dbscan = DBSCAN(eps=eps, min_samples=min_samples)
+dbscan.fit(features)
+
+# Get cluster labels
+labels = dbscan.labels_
+
+# Get the number of clusters (ignore outliers)
+n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+print("Number of clusters:", n_clusters)
+
+# Create a dictionary to store fragments for each cluster
+cluster_fragments = {}
+for i, label in enumerate(labels):
+    if label not in cluster_fragments:
+        cluster_fragments[label] = []
+    cluster_fragments[label].append((i, df_two.iloc[i, 0]))  # Store index and label
+
+# Print fragments for each cluster
+print("Fragments in each cluster:")
+for cluster, fragments in cluster_fragments.items():
+    print("Cluster", cluster, ":")
+    for fragment_index, fragment_label in fragments:
+        print("\tData Point:", fragment_label)
+    
+# Plot the clustered data in 3D
+fig = plt.figure(figsize=(10, 8))
+ax = fig.add_subplot(111, projection='3d')
+
+# Extract coordinates for plotting
+x = df_two[3]
+y = df_two[1]
+z = df_two[2]
+
+# Plot points colored by cluster labels
+ax.scatter(x, y, z, c=labels, cmap='viridis', s=50)
+
+# Set labels and title
+ax.set_xlabel('mpDockQ/pDockQ')
+ax.set_ylabel('contact_pair')
+ax.set_zlabel('iptm')
+ax.set_title('DBSCAN Clustering in 3D')
+
+plt.show()
+
+"""BIRCH for Data"""
+# Load data from Excel spreadsheet
+df_three = pd.read_excel(new_excel_path, sheet_name='normalized data')
+
+# Preprocess the data
+# Replace NaN values with 0
+df_three.fillna(0, inplace=True)
+
+# Instantiate and fit the BIRCH model
+birch = Birch(branching_factor=50, threshold=0.5, n_clusters=3)
+birch.fit(df_three)  # Corrected from df to df_three
+
+# Extract cluster labels
+labels = birch.labels_
+
+# Create a dictionary to store fragments for each cluster
+cluster_fragments = {}
+for i, label in enumerate(labels):
+    if label not in cluster_fragments:
+        cluster_fragments[label] = []
+    cluster_fragments[label].append((i, df_three.iloc[i, 0]))  # Store index and label
+
+# Print fragments for each cluster
+print("Fragments in each cluster:")
+for cluster, fragments in cluster_fragments.items():
+    print("Cluster", cluster, ":")
+    for fragment_index, fragment_label in fragments:
+        print("\tData Point:", fragment_label)
+    
+# Plot the clusters in 3D
+fig = plt.figure(figsize=(10, 8))
+ax = fig.add_subplot(111, projection='3d')
+
+# Extract the three variables
+x = df_three['norm_mpDockQ']
+y = df_three['norm_iptm']
+z = df_three['contact_pair']
+
+# Plot the clusters
+ax.scatter(x, y, z, c=labels, cmap='viridis', s=50)
+ax.set_title('BIRCH Clustering in 3D')
+ax.set_xlabel('norm_mpDockQ')
+ax.set_ylabel('norm_iptm')
+ax.set_zlabel('contact_pair')
+plt.show()
